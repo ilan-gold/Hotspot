@@ -1,17 +1,15 @@
 import numpy as np
-from numba import jit, njit
+from numba import jit, njit, prange
 from tqdm import tqdm
 import pandas as pd
-import multiprocessing
-import itertools
 
 from . import danb_model
 from . import bernoulli_model
 from . import normal_model
 from . import none_model
-from .local_stats import compute_local_cov_max, _fit_gene
+from .local_stats import compute_local_cov_max, _fit_genes
 from .knn import compute_node_degree
-from .utils import center_values
+from .utils import numba_threads
 
 
 @jit(nopython=True)
@@ -441,74 +439,6 @@ def create_centered_counts_row(vals_x, model, num_umi):
     return out_x
 
 
-def _compute_hs_pairs_inner(row_i, counts, neighbors, weights, num_umi,
-                            model, centered, Wtot2, D):
-
-    vals_x = counts[row_i]
-
-    lc_out = np.zeros(counts.shape[0])
-    lc_z_out = np.zeros(counts.shape[0])
-
-    vals_x, mu_x, var_x, x2_x = _fit_gene(vals_x, model, num_umi)
-
-    if centered:
-        vals_x = center_values(vals_x, mu_x, var_x)
-
-    for row_j in range(counts.shape[0]):
-
-        if row_j > row_i:
-            continue
-
-        vals_y = counts[row_j]
-
-        vals_y, mu_y, var_y, x2_y = _fit_gene(vals_y, model, num_umi)
-
-        if centered:
-            vals_y = center_values(vals_y, mu_y, var_y)
-
-        if centered:
-            EG, EG2 = 0, Wtot2/2
-        else:
-            EG, EG2 = compute_moments_weights_pairs_fast(mu_x, x2_x,
-                                                         mu_y, x2_y,
-                                                         neighbors, weights)
-
-        lc = local_cov_pair(vals_x, vals_y,
-                            neighbors, weights)
-
-        stdG = (EG2 - EG**2)**.5
-
-        Z = (lc - EG) / stdG
-
-        lc_out[row_j] = lc
-        lc_z_out[row_j] = Z
-
-    return (lc_out, lc_z_out)
-
-
-def _compute_hs_pairs_inner_centered(
-        rowpair, counts, neighbors, weights, Wtot2, D):
-    """
-    This version assumes that the counts have already been modeled
-    and centered
-    """
-    row_i, row_j = rowpair
-
-    vals_x = counts[row_i]
-    vals_y = counts[row_j]
-
-    EG, EG2 = 0, Wtot2/2
-
-    lc = local_cov_pair(vals_x, vals_y,
-                        neighbors, weights)
-
-    stdG = (EG2 - EG**2)**.5
-
-    Z = (lc - EG) / stdG
-
-    return (lc, Z)
-
-
 @jit(nopython=True)
 def _compute_hs_pairs_inner_centered_cond_sym(
     rowpair, counts, neighbors, weights, eg2s
@@ -546,23 +476,62 @@ def _compute_hs_pairs_inner_centered_cond_sym(
     return (lc, Z)
 
 
-def initializer1(counts, neighbors, weights, num_umi, model, centered, Wtot2, D):
-    global g_counts
-    global g_neighbors
-    global g_weights
-    global g_num_umi
-    global g_model
-    global g_centered
-    global g_Wtot2
-    global g_D
-    g_counts = counts
-    g_neighbors = neighbors
-    g_weights = weights
-    g_num_umi = num_umi
-    g_model = model
-    g_centered = centered
-    g_Wtot2 = Wtot2
-    g_D = D
+@njit(parallel=True)
+def _hs_pairs_kernel(vals, mu, x2, neighbors, weights, centered, Wtot2,
+                     pair_i, pair_j):
+    """All-pairs version of the per-pair statistic, one thread per pair."""
+    n_genes = vals.shape[0]
+    lcs = np.zeros((n_genes, n_genes))
+    lc_zs = np.zeros((n_genes, n_genes))
+
+    for p in prange(len(pair_i)):
+        i = pair_i[p]
+        j = pair_j[p]
+
+        if centered:
+            EG, EG2 = 0.0, Wtot2 / 2
+        else:
+            EG, EG2 = compute_moments_weights_pairs_fast(
+                mu[i], x2[i], mu[j], x2[j], neighbors, weights)
+
+        lc = local_cov_pair(vals[i], vals[j], neighbors, weights)
+        Z = (lc - EG) / (EG2 - EG**2)**0.5
+
+        lcs[i, j] = lc
+        lcs[j, i] = lc
+        lc_zs[i, j] = Z
+        lc_zs[j, i] = Z
+
+    return lcs, lc_zs
+
+
+@njit(parallel=True)
+def _hs_pairs_cond_kernel(counts, neighbors, weights, eg2s, pair_i, pair_j):
+    """All-pairs version of the conditional statistic, one thread per pair."""
+    n_genes = counts.shape[0]
+    lcs = np.zeros((n_genes, n_genes))
+    lc_zs = np.zeros((n_genes, n_genes))
+
+    for p in prange(len(pair_i)):
+        i = pair_i[p]
+        j = pair_j[p]
+
+        lc, Z = _compute_hs_pairs_inner_centered_cond_sym(
+            (i, j), counts, neighbors, weights, eg2s)
+
+        lcs[i, j] = lc
+        lcs[j, i] = lc
+        lc_zs[i, j] = Z
+        lc_zs[j, i] = Z
+
+    return lcs, lc_zs
+
+
+def _pair_index(n_genes, include_diagonal):
+    """Flat (i, j) upper-triangle index -- one balanced prange slice per pair."""
+    pair_i, pair_j = np.triu_indices(n_genes, k=0 if include_diagonal else 1)
+    return pair_i.astype("int32"), pair_j.astype("int32")
+
 
 def compute_hs_pairs(counts, neighbors, weights,
                      num_umi, model, centered=False, jobs=1):
@@ -577,45 +546,13 @@ def compute_hs_pairs(counts, neighbors, weights,
     D = compute_node_degree(neighbors, weights)
     Wtot2 = (weights**2).sum()
 
-    if jobs > 1:
-        with multiprocessing.Pool(
-            processes=jobs, 
-            initializer=initializer1, 
-            initargs=[counts, neighbors, weights, num_umi, model, centered, Wtot2, D]
-        ) as pool:
-            results = list(
-                tqdm(
-                    pool.imap(
-                        _map_fun_parallel_pairs, 
-                        range(counts.shape[0])
-                    ), 
-                    total=counts.shape[0]
-                )
-            )
-    else:
-        def _map_fun(row_i):
-            return _compute_hs_pairs_inner(
-                row_i, counts, neighbors, weights, num_umi,
-                model, centered, Wtot2, D)
-        results = list(
-            tqdm(
-                map(_map_fun, range(counts.shape[0])),
-                total=counts.shape[0]
-            )
-        )
+    vals, mu, x2 = _fit_genes(
+        counts, range(counts.shape[0]), num_umi, model, centered)
 
-    # Only have the lower triangle so we must rebuild the rest
-    lcs = [x[0] for x in results]
-    lc_zs = [x[1] for x in results]
-
-    lcs = np.vstack(lcs)
-    lc_zs = np.vstack(lc_zs)
-
-    lcs = lcs + lcs.T
-    lc_zs = lc_zs + lc_zs.T
-
-    np.fill_diagonal(lcs, lcs.diagonal() / 2)
-    np.fill_diagonal(lc_zs, lc_zs.diagonal() / 2)
+    with numba_threads(jobs):
+        lcs, lc_zs = _hs_pairs_kernel(
+            vals, mu, x2, neighbors, weights, centered, Wtot2,
+            *_pair_index(counts.shape[0], include_diagonal=True))
 
     lc_maxs = compute_local_cov_pairs_max(D, counts)
     lcs = lcs / lc_maxs
@@ -625,17 +562,6 @@ def compute_hs_pairs(counts, neighbors, weights,
 
     return lcs, lc_zs
 
-def initializer2(counts, neighbors, weights, Wtot2, D):
-    global g_counts
-    global g_neighbors
-    global g_weights
-    global g_Wtot2
-    global g_D
-    g_counts = counts
-    g_neighbors = neighbors
-    g_weights = weights
-    g_Wtot2 = Wtot2
-    g_D = D
 
 def compute_hs_pairs_centered(counts, neighbors, weights,
                               num_umi, model, jobs=1):
@@ -652,40 +578,11 @@ def compute_hs_pairs_centered(counts, neighbors, weights,
 
     counts = create_centered_counts(counts, model, num_umi)
 
-    pairs = list(itertools.combinations(range(counts.shape[0]), 2))
-
-    if jobs > 1:
-        with multiprocessing.Pool(
-            processes=jobs, 
-            initializer=initializer2,
-            initargs=[counts, neighbors, weights, Wtot2, D]
-        ) as pool:
-            results = list(
-                tqdm(
-                    pool.imap(
-                        _map_fun_parallel_pairs_centered, 
-                        pairs
-                    ),
-                    total=len(pairs)
-                )
-            )
-    else:
-        def _map_fun(rowpair):
-            return _compute_hs_pairs_inner_centered(
-                rowpair, counts, neighbors, weights, Wtot2, D)
-        results = list(
-            tqdm(
-                map(_map_fun, pairs),
-                total=len(pairs)
-            )
-        )
-
-    N = counts.shape[0]
-    pairs = np.array(pairs)
-    vals_lc = np.array([x[0] for x in results])
-    vals_z = np.array([x[1] for x in results])
-    lcs = expand_pairs(pairs, vals_lc, N)
-    lc_zs = expand_pairs(pairs, vals_z, N)
+    with numba_threads(jobs):
+        # mu/x2 are unread on the centered branch; pass counts to keep types simple
+        lcs, lc_zs = _hs_pairs_kernel(
+            counts, counts, counts, neighbors, weights, True, Wtot2,
+            *_pair_index(counts.shape[0], include_diagonal=False))
 
     lc_maxs = compute_local_cov_pairs_max(D, counts)
     lcs = lcs / lc_maxs
@@ -694,17 +591,6 @@ def compute_hs_pairs_centered(counts, neighbors, weights,
     lc_zs = pd.DataFrame(lc_zs, index=genes, columns=genes)
 
     return lcs, lc_zs
-
-
-def initializer3(counts, neighbors, weights, eg2s):
-    global g_counts
-    global g_neighbors
-    global g_weights
-    global g_eg2s
-    g_counts = counts
-    g_neighbors = neighbors
-    g_weights = weights
-    g_eg2s = eg2s
 
 
 def compute_hs_pairs_centered_cond(counts, neighbors, weights,
@@ -733,40 +619,10 @@ def compute_hs_pairs_centered_cond(counts, neighbors, weights,
         ]
     )
 
-    pairs = list(itertools.combinations(range(counts.shape[0]), 2))
-
-    if jobs > 1:
-        with multiprocessing.Pool(
-            processes=jobs, 
-            initializer=initializer3,
-            initargs=[counts, neighbors, weights, eg2s]
-        ) as pool:
-            results = list(
-                tqdm(
-                    pool.imap(
-                        _map_fun_parallel_pairs_centered_cond,
-                        pairs
-                    ),
-                    total=len(pairs)
-                )
-            )
-    else:
-        def _map_fun(rowpair):
-            return _compute_hs_pairs_inner_centered_cond_sym(
-                rowpair, counts, neighbors, weights, eg2s)
-        results = list(
-            tqdm(
-                map(_map_fun, pairs),
-                total=len(pairs)
-            )
-        )
-
-    N = counts.shape[0]
-    pairs = np.array(pairs)
-    vals_lc = np.array([x[0] for x in results])
-    vals_z = np.array([x[1] for x in results])
-    lcs = expand_pairs(pairs, vals_lc, N)
-    lc_zs = expand_pairs(pairs, vals_z, N)
+    with numba_threads(jobs):
+        lcs, lc_zs = _hs_pairs_cond_kernel(
+            counts, neighbors, weights, eg2s,
+            *_pair_index(counts.shape[0], include_diagonal=False))
 
     lc_maxs = compute_local_cov_pairs_max(D, counts)
     lcs = lcs / lc_maxs
@@ -775,59 +631,6 @@ def compute_hs_pairs_centered_cond(counts, neighbors, weights,
     lc_zs = pd.DataFrame(lc_zs, index=genes, columns=genes)
 
     return lcs, lc_zs
-
-
-def _map_fun_parallel_pairs(row_i):
-    global g_neighbors
-    global g_weights
-    global g_num_umi
-    global g_model
-    global g_centered
-    global g_Wtot2
-    global g_D
-    global g_counts
-    return _compute_hs_pairs_inner(
-        row_i, g_counts, g_neighbors, g_weights, g_num_umi,
-        g_model, g_centered, g_Wtot2, g_D)
-
-
-def _map_fun_parallel_pairs_centered(rowpair):
-    global g_neighbors
-    global g_weights
-    global g_num_umi
-    global g_model
-    global g_Wtot2
-    global g_D
-    global g_counts
-    return _compute_hs_pairs_inner_centered(
-        rowpair, g_counts, g_neighbors, g_weights, g_Wtot2, g_D)
-
-
-def _map_fun_parallel_pairs_centered_cond(rowpair):
-    global g_neighbors
-    global g_weights
-    global g_counts
-    global g_eg2s
-    return _compute_hs_pairs_inner_centered_cond_sym(
-        rowpair, g_counts, g_neighbors, g_weights, g_eg2s
-    )
-
-
-@njit
-def expand_pairs(pairs, vals, N):
-
-    out = np.zeros((N, N))
-
-    for i in range(len(pairs)):
-
-        x = pairs[i, 0]
-        y = pairs[i, 1]
-        v = vals[i]
-
-        out[x, y] = v
-        out[y, x] = v
-
-    return out
 
 
 def compute_local_cov_pairs_max(node_degrees, counts):

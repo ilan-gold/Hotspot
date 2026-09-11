@@ -1,3 +1,6 @@
+from contextlib import contextmanager
+
+import numba
 import numpy as np
 from numba import jit, njit
 
@@ -84,3 +87,16 @@ def neighbor_smoothing_row(vals, neighbors, weights, _lambda=.9):
     out = (out * _lambda) + (1 - _lambda) * vals
 
     return out
+
+
+@contextmanager
+def numba_threads(jobs):
+    """Temporarily cap the thread count used by ``parallel=True`` kernels."""
+    previous = numba.get_num_threads()
+    numba.set_num_threads(
+        max(1, min(int(jobs), numba.config.NUMBA_NUM_THREADS))
+    )
+    try:
+        yield
+    finally:
+        numba.set_num_threads(previous)

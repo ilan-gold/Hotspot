@@ -1,11 +1,10 @@
 import numpy as np
-from numba import jit
+from numba import jit, njit, prange
 from tqdm import tqdm
 import pandas as pd
 from scipy.stats import norm
 from scipy.sparse import issparse
 from statsmodels.stats.multitest import multipletests
-import multiprocessing
 
 from . import danb_model
 from . import bernoulli_model
@@ -13,7 +12,7 @@ from . import normal_model
 from . import none_model
 
 from .knn import compute_node_degree
-from .utils import center_values
+from .utils import center_values, numba_threads
 
 
 @jit(nopython=True)
@@ -165,21 +164,58 @@ def compute_local_cov_max(node_degrees, vals):
 
     return tot / 2
 
-def initializer(neighbors, weights, num_umi, model, centered, Wtot2, D):
-    global g_neighbors
-    global g_weights
-    global g_num_umi
-    global g_model
-    global g_centered
-    global g_Wtot2
-    global g_D
-    g_neighbors = neighbors
-    g_weights = weights
-    g_num_umi = num_umi
-    g_model = model
-    g_centered = centered
-    g_Wtot2 = Wtot2
-    g_D = D
+# ponytail: temporaries are 3 x CHUNK x N_cells doubles; ~240MB at this budget.
+_FIT_CHUNK_DOUBLES = 10_000_000
+
+
+@njit(parallel=True)
+def _compute_hs_kernel(vals, mu, x2, neighbors, weights, D, centered, Wtot2):
+    """Per-gene Hotspot statistic for every gene, one thread per gene."""
+    n_genes = vals.shape[0]
+    out = np.zeros((n_genes, 5))
+
+    for g in prange(n_genes):
+        G = local_cov_weights(vals[g], neighbors, weights)
+
+        if centered:
+            EG, EG2 = 0.0, Wtot2
+        else:
+            EG, EG2 = compute_moments_weights(mu[g], x2[g], neighbors, weights)
+
+        stdG = (EG2 - EG * EG) ** 0.5
+        G_max = compute_local_cov_max(D, vals[g])
+
+        out[g, 0] = G
+        out[g, 1] = EG
+        out[g, 2] = stdG
+        out[g, 3] = (G - EG) / stdG
+        out[g, 4] = (G - EG) / G_max
+
+    return out
+
+
+def _fit_genes(counts, rows, num_umi, model, centered):
+    """Model-fit a block of gene rows into dense (vals, mu, x2) matrices."""
+    vals = np.zeros((len(rows), counts.shape[1]))
+    mu = np.zeros_like(vals)
+    x2 = np.zeros_like(vals)
+
+    for k, i in enumerate(rows):
+        row = counts[i]
+        if issparse(row):
+            row = row.toarray().ravel()
+        row = row.astype("double")
+
+        row, mu_i, var_i, x2_i = _fit_gene(row, model, num_umi)
+        if centered:
+            row = center_values(row, mu_i, var_i)
+
+        vals[k] = row
+        mu[k] = mu_i
+        x2[k] = x2_i
+
+    return vals, mu, x2
+
 
 def compute_hs(
     counts, neighbors, weights, num_umi, model, genes, centered=False, jobs=1,
@@ -199,39 +235,19 @@ def compute_hs(
     D = compute_node_degree(neighbors, weights)
     Wtot2 = (weights**2).sum()
 
-    def data_iter():
-        for i in range(counts.shape[0]):
-            vals = counts[i]
-            if issparse(vals):
-                vals = vals.toarray().ravel()
-            vals = vals.astype("double")
-            yield vals
+    n_genes, n_cells = counts.shape
+    chunk = max(1, _FIT_CHUNK_DOUBLES // n_cells)
+    out = np.zeros((n_genes, 5))
 
-    if jobs > 1:
-        with multiprocessing.Pool(
-            processes=jobs,
-            initializer=initializer,
-            initargs=[neighbors, weights, num_umi, model, centered, Wtot2, D]
-        ) as pool:
-            results = list(
-                tqdm(
-                    pool.imap(
-                        _map_fun_parallel,
-                        data_iter()
-                    ),
-                    total=counts.shape[0]
-                )
-            )
-    else:
-
-        def _map_fun(vals):
-            return _compute_hs_inner(
-                vals, neighbors, weights, num_umi, model, centered, Wtot2, D
+    with numba_threads(jobs):
+        for start in tqdm(range(0, n_genes, chunk)):
+            rows = range(start, min(start + chunk, n_genes))
+            vals, mu, x2 = _fit_genes(counts, rows, num_umi, model, centered)
+            out[start:start + len(vals)] = _compute_hs_kernel(
+                vals, mu, x2, neighbors, weights, D, centered, Wtot2
             )
 
-        results = list(tqdm(map(_map_fun, data_iter()), total=counts.shape[0]))
-
-    results = pd.DataFrame(results, index=genes, columns=["G", "EG", "stdG", "Z", "C"])
+    results = pd.DataFrame(out, index=genes, columns=["G", "EG", "stdG", "Z", "C"])
 
     return _postprocess_results(results)
 
@@ -262,50 +278,6 @@ def _fit_gene(vals, model, num_umi):
     else:
         raise ValueError("Invalid Model: {}".format(model))
     return vals, mu, var, x2
-
-
-def _compute_hs_inner(vals, neighbors, weights, num_umi, model, centered, Wtot2, D):
-    """
-    Note, since this is an inner function, for parallelization to work well
-    none of the contents of the function can use MKL or OPENBLAS threads.
-    Or else we open too many.  Because of this, some simple numpy operations
-    are re-implemented using numba instead as it's difficult to control
-    the number of threads in numpy after it's imported
-    """
-
-    vals, mu, var, x2 = _fit_gene(vals, model, num_umi)
-
-    if centered:
-        vals = center_values(vals, mu, var)
-
-    G = local_cov_weights(vals, neighbors, weights)
-
-    if centered:
-        EG, EG2 = 0, Wtot2
-    else:
-        EG, EG2 = compute_moments_weights(mu, x2, neighbors, weights)
-
-    stdG = (EG2 - EG * EG) ** 0.5
-
-    Z = (G - EG) / stdG
-
-    G_max = compute_local_cov_max(D, vals)
-    C = (G - EG) / G_max
-
-    return [G, EG, stdG, Z, C]
-
-
-def _map_fun_parallel(vals):
-    global g_neighbors
-    global g_weights
-    global g_num_umi
-    global g_model
-    global g_centered
-    global g_Wtot2
-    global g_D
-    return _compute_hs_inner(
-        vals, g_neighbors, g_weights, g_num_umi, g_model, g_centered, g_Wtot2, g_D
-    )
 
 
 def _local_cov_weights_gpu(vals_gpu, W):
@@ -346,7 +318,7 @@ def _compute_local_cov_max_gpu(D_gpu, vals_gpu):
 
 def _compute_hs_gpu(counts, neighbors, weights, num_umi, model, genes, centered):
     """
-    GPU-accelerated version of _compute_hs_inner, batched over all genes.
+    GPU-accelerated version of _compute_hs_kernel, batched over all genes.
     All genes are processed in parallel via sparse matrix multiplication.
     """
     import cupy as cp
