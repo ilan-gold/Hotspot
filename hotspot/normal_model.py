@@ -2,33 +2,21 @@
 Simplest Model - just assumes expression data is normal
 UMI counts are regressed out
 """
-import numpy as np
+from .gpu import array_module
 
 
 def fit_gene_model(gene_counts, umi_counts):
+    """Fit one gene (cells,) or a block of genes (genes, cells) at once."""
+    xp = array_module(gene_counts)
 
-    X = np.vstack((np.ones(len(umi_counts)), umi_counts)).T
-    y = gene_counts.reshape((-1, 1))
+    if xp.var(umi_counts) == 0:
+        mu = xp.mean(gene_counts, axis=-1, keepdims=True) + xp.zeros_like(gene_counts)
+    else:
+        X = xp.stack((xp.ones_like(umi_counts), umi_counts), axis=1)
+        B = gene_counts @ X @ xp.linalg.inv(X.T @ X)  # least squares, per gene
+        mu = B @ X.T
 
-    if umi_counts.var() == 0:
-
-        mu = gene_counts.mean()
-        var = gene_counts.var()
-        mu = np.repeat(mu, len(umi_counts))
-        var = np.repeat(var, len(umi_counts))
-        x2 = mu**2 + var
-
-        return mu, var, x2
-
-    B = np.linalg.inv(X.T.dot(X)).dot(X.T).dot(y)
-
-    mu = X.dot(B)
-
-    var = (y - mu).var()
-    var = np.repeat(var, len(umi_counts))
-
-    mu = mu.ravel()
-
+    var = xp.var(gene_counts - mu, axis=-1, keepdims=True) + xp.zeros_like(mu)
     x2 = mu**2 + var
 
     return mu, var, x2

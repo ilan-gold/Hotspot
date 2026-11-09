@@ -2,174 +2,88 @@ import numpy as np
 import pandas as pd
 from hotspot import sim_data
 from hotspot.knn import neighbors_and_weights, make_weights_non_redundant
-from hotspot.local_stats_pairs import (
-    compute_moments_weights_pairs_slow,
-    compute_moments_weights_pairs,
-    compute_moments_weights_pairs_fast,
-    compute_moments_weights_pairs_std,
-    local_cov_pair
-)
+from numba import jit
 import math
 
-from hotspot.local_stats import local_cov_weights
+from hotspot.knn import compute_node_degree, _build_sparse_weight_matrix
+from hotspot.local_stats_pairs import _hs_pairs_centered_cond_matrix
 
 
-def test_pairs():
+# Ground truth: the loop implementations master ran for local correlations
+# (compute_hs_pairs_centered_cond); the library now computes them as matrix
+# products (_hs_pairs_centered_cond_matrix).
+
+
+@jit(nopython=True)
+def conditional_eg2(x, neighbors, weights):
     """
-    Output of compute_moments_weights_pairs should be equal to
-    compute_moments_weights_pairs_slow
+    Computes EG2 for the conditional correlation
     """
+    N = neighbors.shape[0]
+    K = neighbors.shape[1]
 
-    # Simulate some data
-    N_CELLS = 100
-    N_DIM = 10
+    t1x = np.zeros(N)
 
-    latent = sim_data.sim_latent(N_CELLS, N_DIM)
-    latent = pd.DataFrame(latent)
+    for i in range(N):
+        for k in range(K):
+            j = neighbors[i, k]
 
-    def _compute(neighbors, weights, rel_tol=1e-12):
-        neighbors = neighbors.values
-        weights = weights.values
+            wij = weights[i, k]
+            if wij == 0:
+                continue
 
-        weights = make_weights_non_redundant(neighbors, weights)
+            t1x[i] += wij*x[j]
+            t1x[j] += wij*x[i]
 
-        # Just generate random muX, muY, x2, y2
-        muX = np.random.rand(N_CELLS) * 2 + 2
-        muY = np.random.rand(N_CELLS) * .5 + 1
-        x2 = (np.random.rand(N_CELLS) * 2 + 1)**2 + muX**2
-        y2 = (np.random.rand(N_CELLS) * 3 + .5)**2 + muY**2
+    out_eg2 = (t1x**2).sum()
 
-        EG, EG2 = compute_moments_weights_pairs_slow(
-            muX, x2, muY, y2, neighbors, weights
-        )
-        EG_fast, EG2_fast = compute_moments_weights_pairs(
-            muX, x2, muY, y2, neighbors, weights
-        )
+    return out_eg2
 
-        assert math.isclose(EG, EG_fast, rel_tol=rel_tol)
-        assert math.isclose(EG2, EG2_fast, rel_tol=rel_tol)
 
+@jit(nopython=True)
+def local_cov_pair(x, y, neighbors, weights):
+    """Test statistic for local pair-wise autocorrelation"""
+    out = 0
+
+    for i in range(len(x)):
+        xi = x[i]
+        yi = y[i]
+        if xi == 0 and yi == 0:
+            continue
+        for k in range(neighbors.shape[1]):
+
+            j = neighbors[i, k]
+            w_ij = weights[i, k]
+
+            xj = x[j]
+            yj = y[j]
+
+            out += w_ij*(xi*yj + yi*xj)/2
+
+    return out
+
+
+def test_matrix_matches_loops():
+    """_hs_pairs_centered_cond_matrix matches the loop ground truth."""
+    N_CELLS, N_GENES = 300, 6
+
+    latent = pd.DataFrame(sim_data.sim_latent(N_CELLS, 10))
     neighbors, weights = neighbors_and_weights(
         latent, n_neighbors=30, neighborhood_factor=3, approx_neighbors=False)
-
-    _compute(neighbors, weights)
-
-    neighbors, weights = neighbors_and_weights(
-        latent, n_neighbors=30, neighborhood_factor=3, approx_neighbors=True)
-
-    _compute(neighbors, weights, rel_tol=0.005)
-
-def test_pairs_fast():
-    """
-    Output of compute_moments_weights_pairs should be equal to
-    compute_moments_weights_pairs_fast
-    """
-
-    # Simulate some data
-    N_CELLS = 100
-    N_DIM = 10
-
-    latent = sim_data.sim_latent(N_CELLS, N_DIM)
-    latent = pd.DataFrame(latent)
-
-    def _compute(neighbors, weights, rel_tol=1e-12):
-        neighbors = neighbors.values
-        weights = weights.values
-
-        weights = make_weights_non_redundant(neighbors, weights)
-
-        # Just generate random muX, muY, x2, y2
-        muX = np.random.rand(N_CELLS) * 2 + 2
-        muY = np.random.rand(N_CELLS) * .5 + 1
-        x2 = (np.random.rand(N_CELLS) * 2 + 1)**2 + muX**2
-        y2 = (np.random.rand(N_CELLS) * 3 + .5)**2 + muY**2
-
-        EG, EG2 = compute_moments_weights_pairs(
-            muX, x2, muY, y2, neighbors, weights
-        )
-        EG_fast, EG2_fast = compute_moments_weights_pairs_fast(
-            muX, x2, muY, y2, neighbors, weights
-        )
-
-        assert math.isclose(EG, EG_fast, rel_tol=rel_tol)
-        assert math.isclose(EG2, EG2_fast, rel_tol=rel_tol)
-
-
-    neighbors, weights = neighbors_and_weights(
-        latent, n_neighbors=30, neighborhood_factor=3, approx_neighbors=False)
-
-    _compute(neighbors, weights)
-
-    neighbors, weights = neighbors_and_weights(
-        latent, n_neighbors=30, neighborhood_factor=3, approx_neighbors=False)
-
-    _compute(neighbors, weights, rel_tol=0.005)
-
-
-
-def test_pairs_std():
-    """
-    Output of compute_moments_weights_pairs should be equal to
-    compute_moments_weights_pairs_std when mu = 0 and x2 = 1
-    """
-
-    # Simulate some data
-    N_CELLS = 100
-    N_DIM = 10
-
-    latent = sim_data.sim_latent(N_CELLS, N_DIM)
-    latent = pd.DataFrame(latent)
-
-    neighbors, weights = neighbors_and_weights(
-        latent, n_neighbors=30, neighborhood_factor=3)
-
     neighbors = neighbors.values
-    weights = weights.values
+    weights = make_weights_non_redundant(neighbors, weights.values)
 
-    weights = make_weights_non_redundant(neighbors, weights)
+    X = np.random.randn(N_GENES, N_CELLS)
+    W = _build_sparse_weight_matrix(neighbors, weights, (N_CELLS, N_CELLS))
+    D = compute_node_degree(neighbors, weights)
+    lcs, lc_zs = _hs_pairs_centered_cond_matrix(X, (W + W.T).tocsr(), D, np)
 
-    # Just generate random muX, muY, x2, y2
-    muX = np.zeros(N_CELLS)
-    muY = np.zeros(N_CELLS)
-    x2 = np.ones(N_CELLS)
-    y2 = np.ones(N_CELLS)
-
-    EG_fast, EG2_fast = compute_moments_weights_pairs(
-        muX, x2, muY, y2, neighbors, weights
-    )
-    EG_std, EG2_std = compute_moments_weights_pairs_std(
-        neighbors, weights
-    )
-
-    assert math.isclose(EG_std, EG_fast, rel_tol=1e-12)
-    assert math.isclose(EG2_std, EG2_fast, rel_tol=1e-12)
-
-
-def test_local_correlation():
-    N_CELLS = 1000
-    N_DIM = 10
-
-    latent = sim_data.sim_latent(N_CELLS, N_DIM)
-    latent = pd.DataFrame(latent)
-
-    umi_counts = sim_data.sim_umi_counts(N_CELLS, 2000, 200)
-    umi_counts = pd.Series(umi_counts)
-
-    neighbors, weights = neighbors_and_weights(
-        latent, n_neighbors=30, neighborhood_factor=3
-    )
-    neighbors = neighbors.values
-    weights = weights.values
-    weights = make_weights_non_redundant(neighbors, weights)
-
-    counts_i = np.random.randn(N_CELLS)
-
-    gxy = local_cov_pair(
-        counts_i, counts_i, neighbors, weights
-    )
-
-    g = local_cov_weights(counts_i, neighbors, weights)
-
-    assert math.isclose(
-        g, gxy, rel_tol=1e-10
-    ), "Pairwise covariance on (x, x) should be same as local covariance on (x)"
+    for a in range(N_GENES):
+        for b in range(N_GENES):
+            if a == b:
+                continue
+            g = local_cov_pair(X[a], X[b], neighbors, weights)
+            z_ab = 2 * g / conditional_eg2(X[a], neighbors, weights) ** 0.5
+            z_ba = 2 * g / conditional_eg2(X[b], neighbors, weights) ** 0.5
+            z = z_ab if abs(z_ab) < abs(z_ba) else z_ba
+            assert math.isclose(lc_zs[a, b], z, rel_tol=1e-10)

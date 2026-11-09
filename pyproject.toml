@@ -45,6 +45,7 @@ scikit-learn = ">=0.21.2"
 importlib-metadata = {version = ">1.0", python = "<3.8"}
 python = ">=3.7,<4.0"
 pynndescent = ">=0.5"
+threadpoolctl = ">=2.0"
 anndata = ">=0.7"
 sphinx-book-theme = {version= ">=0.2.0", optional = true}
 myst-nb = {version = "*", optional = true}

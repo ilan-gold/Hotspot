@@ -1,12 +1,35 @@
 import numpy as np
+from numba import njit
 import pandas as pd
 import math
 from hotspot import sim_data
-from hotspot import local_stats
 from hotspot.knn import neighbors_and_weights, make_weights_non_redundant
-from hotspot import bernoulli_model
-from hotspot.utils import center_values
-from hotspot import local_stats_pairs
+from hotspot.knn import _build_sparse_weight_matrix
+
+
+def true_params_scaled(gene_p, umi_counts):
+
+    detect_p = 1-(1-gene_p/10000)**umi_counts
+
+    mu = detect_p
+    var = detect_p * (1 - detect_p)
+    x2 = detect_p
+
+    return mu, var, x2
+
+
+@njit
+def center_values(vals, mu, var):
+    out = np.zeros_like(vals)
+
+    for i in range(len(vals)):
+        std = var[i]**0.5
+        if std == 0:
+            out[i] = 0
+        else:
+            out[i] = (vals[i] - mu[i])/std
+
+    return out
 
 
 def test_local_autocorrelation_centered():
@@ -32,12 +55,13 @@ def test_local_autocorrelation_centered():
     weights = make_weights_non_redundant(neighbors, weights)
 
     Wtot2 = (weights**2).sum()
+    W = _build_sparse_weight_matrix(neighbors, weights, (N_CELLS, N_CELLS))
 
     # Simulate counts
     for gene_p in [.2, 1, 5, 10]:
         N_REPS = 10000
 
-        mu, var, x2 = bernoulli_model.true_params_scaled(
+        mu, var, x2 = true_params_scaled(
             gene_p, umi_counts.values
         )
 
@@ -49,8 +73,7 @@ def test_local_autocorrelation_centered():
 
             counts_i = center_values(counts_i, mu, var)
 
-            g = local_stats.local_cov_weights(
-                counts_i, neighbors, weights)
+            g = counts_i @ (W @ counts_i)
             Gs.append(g)
 
         Gs = np.array(Gs)
@@ -98,6 +121,7 @@ def test_local_correlation_centered():
     weights = make_weights_non_redundant(neighbors, weights)
 
     Wtot2 = (weights**2).sum()
+    W = _build_sparse_weight_matrix(neighbors, weights, (N_CELLS, N_CELLS))
 
     gene_p2 = 1
 
@@ -105,11 +129,11 @@ def test_local_correlation_centered():
     for gene_p in [.2, 1, 5, 10]:
         N_REPS = 10000
 
-        mu, var, x2 = bernoulli_model.true_params_scaled(
+        mu, var, x2 = true_params_scaled(
             gene_p, umi_counts.values
         )
 
-        mu_j, var_j, x2_j = bernoulli_model.true_params_scaled(
+        mu_j, var_j, x2_j = true_params_scaled(
             gene_p2, umi_counts.values
         )
 
@@ -126,8 +150,7 @@ def test_local_correlation_centered():
 
             counts_j = center_values(counts_j, mu_j, var_j)
 
-            g = local_stats_pairs.local_cov_pair(
-                counts_i, counts_j, neighbors, weights)
+            g = (counts_i @ (W @ counts_j) + counts_j @ (W @ counts_i)) / 2
             Gs.append(g)
 
         Gs = np.array(Gs)

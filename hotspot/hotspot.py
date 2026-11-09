@@ -12,7 +12,7 @@ from .knn import (
     make_weights_non_redundant,
 )
 from .local_stats import compute_hs
-from .local_stats_pairs import compute_hs_pairs, compute_hs_pairs_centered_cond
+from .local_stats_pairs import compute_hs_pairs_centered_cond
 
 from . import modules
 from .plots import local_correlation_plot
@@ -487,21 +487,18 @@ class Hotspot:
         print(
             "Computing pair-wise local correlation on {} features...".format(len(genes))
         )
-        counts_dense = self._counts_from_anndata(
-            self.adata[:, genes],
-            self.layer_key,
-            dense=True,
-            pandas=True,
-        )
+        adata = self.adata[:, genes]
+        counts = self._counts_from_anndata(adata, self.layer_key)
 
         lc, lcz = compute_hs_pairs_centered_cond(
-            counts_dense,
+            counts,
             self.neighbors,
             self.weights,
             self.umi_counts,
             self.model,
             jobs=jobs,
             use_gpu=self.use_gpu,
+            genes=adata.var_names,
         )
 
         self.local_correlation_c = lc

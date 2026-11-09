@@ -7,6 +7,8 @@ from tqdm import tqdm
 from pynndescent import NNDescent
 import warnings
 
+from .gpu import backend
+
 
 def neighbors_and_weights(data, n_neighbors=30, neighborhood_factor=3, approx_neighbors=True):
     """
@@ -117,21 +119,36 @@ def compute_weights(distances, neighborhood_factor=3):
     return weights
 
 
-@jit(nopython=True)
 def compute_node_degree(neighbors, weights):
+    """D[i] = sum of weights over all edges touching i (both directions)."""
+    w = weights.ravel().astype("double")
+    N = neighbors.shape[0]
+    return weights.sum(axis=1, dtype="double") + np.bincount(
+        neighbors.ravel(), weights=w, minlength=N
+    )
 
-    D = np.zeros(neighbors.shape[0])
 
-    for i in range(neighbors.shape[0]):
-        for k in range(neighbors.shape[1]):
+def _build_sparse_weight_matrix(neighbors, weights, shape, square=False, use_gpu=False):
+    """Build a (CuPy if use_gpu) sparse CSR matrix from neighbor/weight arrays.
 
-            j = neighbors[i, k]
-            w_ij = weights[i, k]
+    W[i, neighbors[i,k]] = weights[i,k]  for all i, k where weights[i,k] != 0.
+    If square=True, uses weights^2 instead (for moment computations).
+    """
+    N, K = neighbors.shape
+    rows = np.repeat(np.arange(N, dtype=np.int32), K)
+    cols = neighbors.ravel().astype(np.int32)
+    vals = weights.ravel().astype(np.float64)
+    if square:
+        vals = vals ** 2
 
-            D[i] += w_ij
-            D[j] += w_ij
+    mask = vals != 0
+    rows, cols, vals = rows[mask], cols[mask], vals[mask]
 
-    return D
+    xp, sp = backend(use_gpu)
+    return sp.csr_matrix(
+        (xp.asarray(vals), (xp.asarray(rows), xp.asarray(cols))),
+        shape=shape,
+    )
 
 
 @jit(nopython=True)
