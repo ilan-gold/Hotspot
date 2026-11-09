@@ -1,5 +1,4 @@
 import numpy as np
-from numba import jit
 from tqdm import tqdm
 import pandas as pd
 from scipy.stats import norm
@@ -17,80 +16,6 @@ from .knn import compute_node_degree
 from .utils import center_values
 from .gpu import get_backend, asnumpy, _build_sparse_weight_matrix
 
-
-@jit(nopython=True)
-def compute_moments_weights_slow(mu, x2, neighbors, weights):
-    """
-    This version exaustively iterates over all |E|^2 terms
-    to compute the expected moments exactly.  Used to test
-    the more optimized formulations that follow
-    """
-
-    N = neighbors.shape[0]
-    K = neighbors.shape[1]
-
-    # Calculate E[G]
-    EG = 0
-    for i in range(N):
-        for k in range(K):
-            j = neighbors[i, k]
-            wij = weights[i, k]
-
-            EG += wij * mu[i] * mu[j]
-
-    # Calculate E[G^2]
-    EG2 = 0
-    for i in range(N):
-
-        EG2_i = 0
-
-        for k in range(K):
-            j = neighbors[i, k]
-            wij = weights[i, k]
-
-            for x in range(N):
-                for z in range(K):
-                    y = neighbors[x, z]
-                    wxy = weights[x, z]
-
-                    s = wij * wxy
-                    if s == 0:
-                        continue
-
-                    if i == x:
-                        if j == y:
-                            t1 = x2[i] * x2[j]
-                        else:
-                            t1 = x2[i] * mu[j] * mu[y]
-                    elif i == y:
-                        if j == x:
-                            t1 = x2[i] * x2[j]
-                        else:
-                            t1 = x2[i] * mu[j] * mu[x]
-                    else:  # i is unique since i can't equal j
-
-                        if j == x:
-                            t1 = mu[i] * x2[j] * mu[y]
-                        elif j == y:
-                            t1 = mu[i] * x2[j] * mu[x]
-                        else:  # i and j are unique, no shared nodes
-                            t1 = mu[i] * mu[j] * mu[x] * mu[y]
-
-                    EG2_i += s * t1
-
-        EG2 += EG2_i
-
-    return EG, EG2
-
-
-@jit(nopython=True)
-def compute_local_cov_max(node_degrees, vals):
-    tot = 0.0
-
-    for i in range(node_degrees.size):
-        tot += node_degrees[i] * (vals[i] ** 2)
-
-    return tot / 2
 
 # Genes per block are chosen so each (genes x cells) dense array holds ~this many doubles
 _BLOCK_ELEMS = 2**22

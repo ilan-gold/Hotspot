@@ -3,12 +3,8 @@ import pandas as pd
 from hotspot import sim_data
 from hotspot.knn import neighbors_and_weights, make_weights_non_redundant
 from hotspot.gpu import _build_sparse_weight_matrix
-from hotspot.local_stats import (
-    _compute_moments_weights,
-    _local_cov_weights,
-    compute_moments_weights_slow
-)
-from .numba_reference import local_cov_weights
+from hotspot.local_stats import _compute_moments_weights, _local_cov_weights
+from .numba_reference import compute_moments_weights_slow, local_cov_weights
 import math
 
 

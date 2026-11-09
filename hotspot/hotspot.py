@@ -12,7 +12,7 @@ from .knn import (
     make_weights_non_redundant,
 )
 from .local_stats import compute_hs
-from .local_stats_pairs import compute_hs_pairs, compute_hs_pairs_centered_cond
+from .local_stats_pairs import compute_hs_pairs_centered_cond
 
 from . import modules
 from .plots import local_correlation_plot

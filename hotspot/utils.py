@@ -17,34 +17,6 @@ def center_values(vals, mu, var):
 
 
 @njit
-def neighbor_smoothing(vals, neighbors, weights, _lambda=.9):
-    """
-
-    output is (neighborhood average) * _lambda + self * (1-_lambda)
-
-
-    vals: expression matrix (genes x cells)
-    neighbors: neighbor indices (cells x K)
-    weights: neighbor weights (cells x K)
-    _lambda: ratio controlling self vs. neighborhood
-    """
-
-    out = np.zeros_like(vals, dtype=np.float64)
-
-    G = vals.shape[0]       # Genes
-
-    for g in range(G):
-
-        row_vals = vals[g, :]
-        smooth_row_vals = neighbor_smoothing_row(
-            row_vals, neighbors, weights, _lambda)
-
-        out[g, :] = smooth_row_vals
-
-    return out
-
-
-@njit
 def neighbor_smoothing_row(vals, neighbors, weights, _lambda=.9):
     """
 
