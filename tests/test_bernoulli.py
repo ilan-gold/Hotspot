@@ -3,10 +3,19 @@ import pandas as pd
 import math
 from hotspot import sim_data
 from hotspot.knn import neighbors_and_weights, make_weights_non_redundant
-from hotspot import bernoulli_model
 from hotspot.utils import center_values
-from hotspot import local_stats_pairs
-from .numba_reference import local_cov_weights
+from .numba_reference import local_cov_weights, local_cov_pair
+
+
+def true_params_scaled(gene_p, umi_counts):
+
+    detect_p = 1-(1-gene_p/10000)**umi_counts
+
+    mu = detect_p
+    var = detect_p * (1 - detect_p)
+    x2 = detect_p
+
+    return mu, var, x2
 
 
 def test_local_autocorrelation_centered():
@@ -37,7 +46,7 @@ def test_local_autocorrelation_centered():
     for gene_p in [.2, 1, 5, 10]:
         N_REPS = 10000
 
-        mu, var, x2 = bernoulli_model.true_params_scaled(
+        mu, var, x2 = true_params_scaled(
             gene_p, umi_counts.values
         )
 
@@ -105,11 +114,11 @@ def test_local_correlation_centered():
     for gene_p in [.2, 1, 5, 10]:
         N_REPS = 10000
 
-        mu, var, x2 = bernoulli_model.true_params_scaled(
+        mu, var, x2 = true_params_scaled(
             gene_p, umi_counts.values
         )
 
-        mu_j, var_j, x2_j = bernoulli_model.true_params_scaled(
+        mu_j, var_j, x2_j = true_params_scaled(
             gene_p2, umi_counts.values
         )
 
@@ -126,7 +135,7 @@ def test_local_correlation_centered():
 
             counts_j = center_values(counts_j, mu_j, var_j)
 
-            g = local_stats_pairs.local_cov_pair(
+            g = local_cov_pair(
                 counts_i, counts_j, neighbors, weights)
             Gs.append(g)
 
