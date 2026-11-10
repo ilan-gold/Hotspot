@@ -1,14 +1,17 @@
-import numpy as np
-import pandas as pd
-from hotspot import sim_data
-from hotspot.knn import neighbors_and_weights, make_weights_non_redundant
-from hotspot.gpu import _build_sparse_weight_matrix
-from hotspot.local_stats import _compute_moments_weights, _local_cov_weights
-from .numba_reference import compute_moments_weights_slow, local_cov_weights
 import math
 
+import numpy as np
+import pandas as pd
 
-def test_moments_fast():
+from hotspot import sim_data
+from hotspot.knn import make_weights_non_redundant, neighbors_and_weights
+from hotspot.local_stats import _compute_moments_weights, _local_cov_weights
+from hotspot.utils import _build_sparse_weight_matrix
+
+from .numba_reference import compute_moments_weights_slow, local_cov_weights
+
+
+def test_moments_fast() -> None:
     """
     Output of the batched _compute_moments_weights should be the same as
     compute_moments_weights_slow
@@ -18,22 +21,17 @@ def test_moments_fast():
     N_CELLS = 100
     N_DIM = 10
 
-    latent = sim_data.sim_latent(N_CELLS, N_DIM)
-    latent = pd.DataFrame(latent)
+    latent = pd.DataFrame(sim_data.sim_latent(N_CELLS, N_DIM))
 
-    def _compute(neighbors, weights, rel_tol=1e-12):
-        neighbors = neighbors.values
-        weights = weights.values
-
-        weights = make_weights_non_redundant(neighbors, weights)
+    def _compute(neighbors_df: pd.DataFrame, weights_df: pd.DataFrame, rel_tol: float = 1e-12) -> None:
+        neighbors = neighbors_df.to_numpy()
+        weights = make_weights_non_redundant(neighbors, weights_df.to_numpy())
 
         # Just generate random muX, muY, x2, y2
         muX = np.random.rand(N_CELLS) * 2 + 2
-        x2 = (np.random.rand(N_CELLS) * 2 + 1)**2 + muX**2
+        x2 = (np.random.rand(N_CELLS) * 2 + 1) ** 2 + muX**2
 
-        EG, EG2 = compute_moments_weights_slow(
-            muX, x2, neighbors, weights
-        )
+        EG, EG2 = compute_moments_weights_slow(muX, x2, neighbors, weights)
         shape = (N_CELLS, N_CELLS)
         W = _build_sparse_weight_matrix(neighbors, weights, shape)
         W_sq = _build_sparse_weight_matrix(neighbors, weights, shape, square=True)
@@ -45,13 +43,10 @@ def test_moments_fast():
         G = local_cov_weights(muX, neighbors, weights)
         assert math.isclose(G, _local_cov_weights(muX[None], W)[0], rel_tol=1e-12)
 
-    neighbors, weights = neighbors_and_weights(
-        latent, n_neighbors=30, neighborhood_factor=3, approx_neighbors=False)
+    neighbors, weights = neighbors_and_weights(latent, n_neighbors=30, neighborhood_factor=3, approx_neighbors=False)
 
     _compute(neighbors, weights)
 
-
-    neighbors, weights = neighbors_and_weights(
-        latent, n_neighbors=30, neighborhood_factor=3, approx_neighbors=True)
+    neighbors, weights = neighbors_and_weights(latent, n_neighbors=30, neighborhood_factor=3, approx_neighbors=True)
 
     _compute(neighbors, weights, rel_tol=0.005)

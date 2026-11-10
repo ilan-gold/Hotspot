@@ -2,17 +2,19 @@
 Reference loop implementations removed from the library when the CPU path
 switched to batched matrix code, copied verbatim from master as ground truth.
 """
+
 import numpy as np
-from numba import jit
+
+from hotspot.types import FloatArray, IntArray
+from hotspot.utils import njit
 
 
-@jit(nopython=True)
-def local_cov_weights(x, neighbors, weights):
+@njit
+def local_cov_weights(x: FloatArray, neighbors: IntArray, weights: FloatArray) -> float:
     out = 0
 
     for i in range(len(x)):
         for k in range(neighbors.shape[1]):
-
             j = neighbors[i, k]
             w_ij = weights[i, k]
 
@@ -26,8 +28,8 @@ def local_cov_weights(x, neighbors, weights):
     return out
 
 
-@jit(nopython=True)
-def conditional_eg2(x, neighbors, weights):
+@njit
+def conditional_eg2(x: FloatArray, neighbors: IntArray, weights: FloatArray) -> float:
     """
     Computes EG2 for the conditional correlation
     """
@@ -44,16 +46,18 @@ def conditional_eg2(x, neighbors, weights):
             if wij == 0:
                 continue
 
-            t1x[i] += wij*x[j]
-            t1x[j] += wij*x[i]
+            t1x[i] += wij * x[j]
+            t1x[j] += wij * x[i]
 
     out_eg2 = (t1x**2).sum()
 
     return out_eg2
 
 
-@jit(nopython=True)
-def compute_moments_weights_slow(mu, x2, neighbors, weights):
+@njit
+def compute_moments_weights_slow(
+    mu: FloatArray, x2: FloatArray, neighbors: IntArray, weights: FloatArray
+) -> tuple[float, float]:
     """
     This version exaustively iterates over all |E|^2 terms
     to compute the expected moments exactly.  Used to test
@@ -75,7 +79,6 @@ def compute_moments_weights_slow(mu, x2, neighbors, weights):
     # Calculate E[G^2]
     EG2 = 0
     for i in range(N):
-
         EG2_i = 0
 
         for k in range(K):
@@ -102,7 +105,6 @@ def compute_moments_weights_slow(mu, x2, neighbors, weights):
                         else:
                             t1 = x2[i] * mu[j] * mu[x]
                     else:  # i is unique since i can't equal j
-
                         if j == x:
                             t1 = mu[i] * x2[j] * mu[y]
                         elif j == y:
@@ -117,8 +119,8 @@ def compute_moments_weights_slow(mu, x2, neighbors, weights):
     return EG, EG2
 
 
-@jit(nopython=True)
-def local_cov_pair(x, y, neighbors, weights):
+@njit
+def local_cov_pair(x: FloatArray, y: FloatArray, neighbors: IntArray, weights: FloatArray) -> float:
     """Test statistic for local pair-wise autocorrelation"""
     out = 0
 
@@ -128,13 +130,12 @@ def local_cov_pair(x, y, neighbors, weights):
         if xi == 0 and yi == 0:
             continue
         for k in range(neighbors.shape[1]):
-
             j = neighbors[i, k]
             w_ij = weights[i, k]
 
             xj = x[j]
             yj = y[j]
 
-            out += w_ij*(xi*yj + yi*xj)/2
+            out += w_ij * (xi * yj + yi * xj) / 2
 
     return out
