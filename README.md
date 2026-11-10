@@ -1,4 +1,4 @@
-![Build Status](https://github.com/YosefLab/hotspot/workflows/hotspot/badge.svg)
+[![Tests](https://github.com/YosefLab/hotspot/actions/workflows/test.yaml/badge.svg)](https://github.com/YosefLab/hotspot/actions/workflows/test.yaml)
 # Hotspot
 
 Hotspot is a tool for identifying informative genes (and gene modules) in a single-cell dataset.
@@ -15,9 +15,9 @@ The choice of metric allows you to evaluate different types of gene modules:
 
 **Examples**
 
-- [Spatial Data (Mouse Cerebellum)](https://hotspot.readthedocs.io/en/latest/Spatial_Tutorial.html)
-- [Lineage Data (Mouse Embryogenesis)](https://hotspot.readthedocs.io/en/latest/Lineage_Tutorial.html)
-- [Human CD4 T cells](https://hotspot.readthedocs.io/en/latest/CD4_Tutorial.html)
+- [Spatial Data (Mouse Cerebellum)](https://hotspot.readthedocs.io/en/latest/notebooks/Spatial_Tutorial.html)
+- [Lineage Data (Mouse Embryogenesis)](https://hotspot.readthedocs.io/en/latest/notebooks/Lineage_Tutorial.html)
+- [Human CD4 T cells](https://hotspot.readthedocs.io/en/latest/notebooks/CD4_Tutorial.html)
 
 **Other Links**
 

@@ -1,15 +1,15 @@
+import anndata
 import numpy as np
 import pandas as pd
-from hotspot import sim_data
-from hotspot import Hotspot
-import anndata
 import pytest
 import scanpy as sc
-
 from scipy.sparse import csc_matrix
 
+from hotspot import Hotspot, sim_data
+from hotspot.types import Model
 
-def test_models():
+
+def test_models() -> None:
     """
     Ensure each model runs
     """
@@ -19,28 +19,21 @@ def test_models():
     N_DIM = 10
     N_GENES = 10
 
-    latent = sim_data.sim_latent(N_CELLS, N_DIM)
-    latent = pd.DataFrame(
-        latent,
-        index=['Cell{}'.format(i+1) for i in range(N_CELLS)]
-    )
+    latent = pd.DataFrame(sim_data.sim_latent(N_CELLS, N_DIM), index=[f"Cell{i + 1}" for i in range(N_CELLS)])
 
-    umi_counts = sim_data.sim_umi_counts(N_CELLS, 2000, 200)
-    umi_counts = pd.Series(umi_counts)
+    umi_counts = pd.Series(sim_data.sim_umi_counts(N_CELLS, 2000, 200))
 
-    gene_exp = np.random.rand(N_GENES, N_CELLS)
     gene_exp = pd.DataFrame(
-        gene_exp,
-        index=['Gene{}'.format(i+1) for i in range(gene_exp.shape[0])],
-        columns=latent.index
+        np.random.rand(N_GENES, N_CELLS), index=[f"Gene{i + 1}" for i in range(N_GENES)], columns=latent.index
     )
 
     adata = anndata.AnnData(gene_exp.transpose())
-    adata.layers["sparse"] = csc_matrix(adata.X)
+    adata.layers["sparse"] = csc_matrix(gene_exp.T.to_numpy())
     adata.obsm["latent"] = latent.values
     adata.obs["umi_counts"] = umi_counts.values
 
-    for model in ['danb', 'bernoulli', 'normal', 'none']:
+    models: list[Model] = ["danb", "bernoulli", "normal", "none"]
+    for model in models:
         for lk in [None, "sparse"]:
             hs = Hotspot(
                 adata,
@@ -67,7 +60,7 @@ def test_models():
             assert hs.modules.index.intersection(gene_exp.index).size == N_GENES
 
             assert isinstance(hs.linkage, np.ndarray)
-            assert hs.linkage.shape == (N_GENES-1, 4)
+            assert hs.linkage.shape == (N_GENES - 1, 4)
 
             hs.calculate_module_scores()
 
@@ -77,17 +70,13 @@ def test_models():
     # test precomputed distance matrix
     sc.pp.neighbors(adata, use_rep="latent", n_neighbors=30)
     hs = Hotspot(
-        adata,
-        model="normal",
-        umi_counts_obs_key="umi_counts",
-        layer_key="sparse",
-        distances_obsp_key="distances"
+        adata, model="normal", umi_counts_obs_key="umi_counts", layer_key="sparse", distances_obsp_key="distances"
     )
     hs.create_knn_graph(False, n_neighbors=30)
     hs.compute_autocorrelations()
 
 
-def test_filter_genes():
+def test_filter_genes() -> None:
     """
     Ensure genes with no expression are pre-filtered
     """
@@ -97,18 +86,14 @@ def test_filter_genes():
     N_GENES = 10
     N_GENES_ZERO = 5
 
-    latent = sim_data.sim_latent(N_CELLS, N_DIM)
-    latent = pd.DataFrame(latent)
+    latent = pd.DataFrame(sim_data.sim_latent(N_CELLS, N_DIM))
 
-    umi_counts = sim_data.sim_umi_counts(N_CELLS, 2000, 200)
-    umi_counts = pd.Series(umi_counts)
+    umi_counts = pd.Series(sim_data.sim_umi_counts(N_CELLS, 2000, 200))
 
-    gene_exp = np.random.rand(N_GENES+N_GENES_ZERO, N_CELLS)
-    gene_exp[N_GENES:] = 0
+    gene_exp_arr = np.random.rand(N_GENES + N_GENES_ZERO, N_CELLS)
+    gene_exp_arr[N_GENES:] = 0
     gene_exp = pd.DataFrame(
-        gene_exp,
-        index=['Gene{}'.format(i+1) for i in range(gene_exp.shape[0])],
-        columns=latent.index
+        gene_exp_arr, index=[f"Gene{i + 1}" for i in range(gene_exp_arr.shape[0])], columns=latent.index
     )
 
     adata = anndata.AnnData(gene_exp.transpose())
@@ -116,12 +101,8 @@ def test_filter_genes():
     adata.obs["umi_counts"] = umi_counts.values
 
     with pytest.raises(ValueError):
-        hs = Hotspot(
-            adata, model='normal', latent_obsm_key="latent", umi_counts_obs_key="umi_counts"
-        )
+        hs = Hotspot(adata, model="normal", latent_obsm_key="latent", umi_counts_obs_key="umi_counts")
 
-    hs = Hotspot.legacy_init(
-        gene_exp, model='normal', latent=latent, umi_counts=umi_counts
-    )
+    hs = Hotspot.legacy_init(gene_exp, model="normal", latent=latent, umi_counts=umi_counts)
 
     assert hs.counts.shape[0] == N_GENES

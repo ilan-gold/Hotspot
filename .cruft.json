@@ -1,0 +1,44 @@
+{
+  "template": "https://github.com/scverse/cookiecutter-scverse",
+  "commit": "3d9d0c1a7d78215f402089f988a5062560d21da9",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "project_name": "hotspotsc",
+      "package_name": "hotspot",
+      "project_description": "Identifying informative genes (and gene modules) in a single-cell dataset.",
+      "author_full_name": "David DeTomaso",
+      "author_email": "David.DeTomaso@berkeley.edu",
+      "github_user": "yoseflab",
+      "github_repo": "hotspot",
+      "license": "MIT License",
+      "ide_integration": false,
+      "issue_categorization": "labels",
+      "_copy_without_render": [
+        ".github/workflows/build.yaml",
+        ".github/workflows/test.yaml",
+        "docs/_templates/autosummary/**.rst"
+      ],
+      "_exclude_on_template_update": [
+        "CHANGELOG.md",
+        "LICENSE",
+        "README.md",
+        "docs/api.md",
+        "docs/index.md",
+        "docs/notebooks/example.ipynb",
+        "docs/references.bib",
+        "docs/references.md",
+        "src/**",
+        "tests/**"
+      ],
+      "_render_devdocs": false,
+      "_jinja2_env_vars": {
+        "lstrip_blocks": true,
+        "trim_blocks": true
+      },
+      "_template": "https://github.com/scverse/cookiecutter-scverse",
+      "_commit": "3d9d0c1a7d78215f402089f988a5062560d21da9"
+    }
+  },
+  "directory": null
+}
